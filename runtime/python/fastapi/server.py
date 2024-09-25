@@ -12,11 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+
+import io
+import gc
+import torch
+import torchaudio
+import numpy as np
+
 import sys
 import argparse
 import logging
 logging.getLogger('matplotlib').setLevel(logging.WARNING)
-from fastapi import FastAPI, UploadFile, Form, File
+from fastapi import FastAPI, UploadFile, Form, File, Query
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
@@ -41,6 +48,37 @@ def generate_data(model_output):
     for i in model_output:
         tts_audio = (i['tts_speech'].numpy() * (2 ** 15)).astype(np.int16).tobytes()
         yield tts_audio
+
+
+@app.get("/tts")
+async def inference_sft(tts_text: str = Query(), spk_id: str = Query()):
+    model_output = cosyvoice.inference_sft(tts_text, spk_id)
+
+    tts_audio_bytes = b''
+    for i in model_output:
+        tts_audio = (i['tts_speech'].numpy() * (2 ** 15)).astype(np.int16).tobytes()
+        tts_audio_bytes += tts_audio
+
+    tts_speech = torch.from_numpy(np.array(np.frombuffer(tts_audio_bytes, dtype=np.int16))).unsqueeze(dim=0)
+
+    # 创建一个BytesIO流
+    buffer = io.BytesIO()
+
+    # 使用torchaudio.save将音频数据写入BytesIO流
+    torchaudio.save(buffer, tts_speech, 22050, format='wav')
+
+    # 将流的指针移动到开始位置
+    buffer.seek(0)
+
+    # 执行Python垃圾回收
+    gc.collect()
+
+    # 释放PyTorch CUDA缓存
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # 返回StreamingResponse对象
+    return StreamingResponse(buffer, media_type="audio/wav")
 
 
 @app.get("/inference_sft")
